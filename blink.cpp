@@ -25,13 +25,13 @@
 
 static int chars_rxed = 0;
 
-char prefix[6];
+char prefix[16];
 char sentence[128];
 
 float latitude = 0.0f;
 float longitude = 0.0f;
 
-uint8_t clear_array(char* array, uint8_t size){
+uint8_t clear_array(uint8_t* array, uint8_t size){
     for(int i = 0; i<size; i++){
         array[i] = 0;
     }
@@ -44,7 +44,7 @@ double coord_clean(char* raw_numeric, char direction){
 
     uint8_t decimalPos = 0;
     //Just in case a different compiler doesn't clear assigned arrays.
-    clear_array(loc_deg, 4);
+    clear_array((uint8_t*)loc_deg, sizeof(loc_deg));
     
     //Determining if it is a latitude or longitude value by locating the decimal point
     //We get DDMM.mmmm for latitude and DDDMM.mmmm for longitude
@@ -62,66 +62,83 @@ double coord_clean(char* raw_numeric, char direction){
     return(loc_final);
 }
 
-void parse_sentence(){
-    strncpy(prefix, sentence + 1,5);
-    //printf("%s\n",prefix);
-
+uint8_t parse_sentence(){
+    //printf("Parsing a sentence!\n");
+    //printf("%s\n", sentence);
+    memcpy(prefix, &sentence[1],5);
+    printf("Picked up a prefix: %s\n", prefix);
+    return(0);
+    /*
     uint8_t gmt_hour;
     uint8_t gmt_minute;
     uint8_t gmt_second;
 
-    float lat;
-    float lon;
+    double lat;
+    double lon;
     
+    //printf("/!\\");
+
     //strcmp returns 0 when both are equal!
     if(!strcmp(prefix, "GNRMC")){
-        printf("%s", sentence);
+        //printf("%s\n", sentence);
+        //printf("Parsing a location sentence!\n");
         char sentencePart[128];
         memcpy(sentencePart,&sentence[7],strlen(sentence)-6);
         
         char buffer[128];
         uint8_t field_counter = 0;
 
-        for(int i = 0; i<strlen(sentence); i++){
+        for(int i = 0; i<strlen(sentencePart); i++){
 
-            if(sentence[i]==','){
+            if(sentencePart[i]==','){
 
-                if(field_counter==3){
-                   latitude = coord_clean(buffer, sentence[i+1]);
+                switch(field_counter){
+                    case 3:
+                        latitude = coord_clean(buffer, sentencePart[i+1]);
+                        break;
+                    case 5:
+                        longitude = coord_clean(buffer, sentencePart[i+1]);
+                        break;
+                    default:
+                        printf("Other!\n");
+                        break;
                 }
-                else if (field_counter==5){
-                    longitude = coord_clean(buffer, sentence[i+1]);
-                }
-
-                printf("\n");
-                field_counter++;
-                //Clearing the buffer between sentence sections
-                memset(buffer, 0, sizeof buffer);
-                printf("%d\t",field_counter);
+                   
             }
             else{
-                buffer[strlen(buffer)] = sentence[i];
+                buffer[strlen(buffer)] = sentencePart[i];
             }
+
+            printf("\n");
+            field_counter++;
+            //Clearing the buffer between sentence sections
+            memset(buffer, 0, sizeof buffer);
+            printf("%d\t",field_counter);
         }
 
     }
     else if(!strcmp(prefix, "GPTXT")){
-        //printf("Diagnostics sentence!");
+        printf("Diagnostics sentence!");
     }
+    clear_array((uint8_t*)prefix, sizeof(prefix));
+    printf("Done!\n");
+    return(0);
+    */
 }
 
 
 void on_uart_rx() {
-
     while (uart_is_readable(UART_ID)) {
+        //printf("Reading a char from UART!\n");
         uint8_t ch = uart_getc(UART_ID);
+        printf("%c", ch);
 
         sentence[strlen(sentence)] = ch;
         if(ch == '\n'){
+            //printf("Received a sentence!\n");
+            printf("This one: %s\n", sentence);
             parse_sentence();
-            for(int i = 0; i<sizeof(sentence); i++){
-                sentence[i] = 0;
-            }            
+            clear_array((uint8_t*)sentence, sizeof(sentence));          
         }
     }
 }
