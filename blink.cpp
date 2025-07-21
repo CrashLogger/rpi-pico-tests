@@ -31,56 +31,35 @@ char sentence[128];
 float latitude = 0.0f;
 float longitude = 0.0f;
 
-float lat_clean(char* raw_numeric, char direction){
-    printf("%s, %c", raw_numeric, direction);
-
-    // Dealing with the degrees in the GPS sentence
-    char loc_deg[3];
-    sprintf(loc_deg, "%c%c", raw_numeric[0], raw_numeric[1]);
-    float loc_coo = 0.0f;
-    loc_coo = loc_coo + atoi(loc_deg);
-
-    // Dealing with the decimal minutes in the GPS sentence
-    raw_numeric[strlen(raw_numeric)] = 0;
-    printf(&raw_numeric[2]);
-    loc_coo = loc_coo + (atof(&raw_numeric[2]))/60.0f;
-
-    //N and E are both positive and before the letter O
-    //S and W are both negative and after the letter O
-    if(direction > 'O'){
-        loc_coo = loc_coo - 2*loc_coo;;
+uint8_t clear_array(char* array, uint8_t size){
+    for(int i = 0; i<size; i++){
+        array[i] = 0;
     }
-
-    printf("\tPARSED LOCAL COORDINATE:%4.4f", loc_coo);
-
-    return(loc_coo);
+    return(0);
 }
 
-float long_clean(char* raw_numeric, char direction){
-    printf("%s, %c", raw_numeric, direction);
-
-    // Dealing with the degrees in the GPS sentence
+double coord_clean(char* raw_numeric, char direction){
     char loc_deg[4];
-    sprintf(loc_deg, "%c%c%c", raw_numeric[0], raw_numeric[1], raw_numeric[2]);
-    float loc_coo = 0.0f;
-    loc_coo = loc_coo + atoi(loc_deg);
+    double loc_final;
 
-    // Dealing with the decimal minutes in the GPS sentence
-    raw_numeric[strlen(raw_numeric)] = 0;
-    printf(&raw_numeric[3]);
-    loc_coo = loc_coo + (atof(&raw_numeric[3]))/60.0f;
-
+    uint8_t decimalPos = 0;
+    //Just in case a different compiler doesn't clear assigned arrays.
+    clear_array(loc_deg, 4);
     
+    //Determining if it is a latitude or longitude value by locating the decimal point
+    //We get DDMM.mmmm for latitude and DDDMM.mmmm for longitude
+    //We could identify them by the direction character too...!
+    decimalPos = (uint8_t)(strchr(raw_numeric, '.') - raw_numeric);
+    memcpy(loc_deg, raw_numeric, decimalPos-2);
+    loc_final = atoi(loc_deg)+(atof(&raw_numeric[decimalPos-2]))/60.0f;
 
     //N and E are both positive and before the letter O
     //S and W are both negative and after the letter O
     if(direction > 'O'){
-        loc_coo = loc_coo - 2*loc_coo;
+        loc_final = loc_final - 2*loc_final;;
     }
-
-    printf("\tPARSED LOCAL COORDINATE:%4.4f", loc_coo);
-
-    return(loc_coo);
+    printf("Local coordinate:\t%4.4lf", loc_final);
+    return(loc_final);
 }
 
 void parse_sentence(){
@@ -108,10 +87,10 @@ void parse_sentence(){
             if(sentence[i]==','){
 
                 if(field_counter==3){
-                   latitude = lat_clean(buffer, sentence[i+1]);
+                   latitude = coord_clean(buffer, sentence[i+1]);
                 }
                 else if (field_counter==5){
-                    longitude = long_clean(buffer, sentence[i+1]);
+                    longitude = coord_clean(buffer, sentence[i+1]);
                 }
 
                 printf("\n");
@@ -139,8 +118,6 @@ void on_uart_rx() {
 
         sentence[strlen(sentence)] = ch;
         if(ch == '\n'){
-            //printf("\n===========================\n");
-            //printf("%s", sentence);
             parse_sentence();
             for(int i = 0; i<sizeof(sentence); i++){
                 sentence[i] = 0;
