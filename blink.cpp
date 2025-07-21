@@ -25,11 +25,47 @@
 
 static int chars_rxed = 0;
 
+uint32_t ms_since_boot = 0;
+uint32_t ms_last_read = 0;
+uint32_t ms_last_change = 0;
+uint32_t ms_last_loc = 0;
+uint32_t ms_last_hdg = 0;
+uint32_t ms_last_print = 0;
+uint32_t ms_last_joy = 0;
+
+uint8_t led_state = 0;
+
+struct location_data{
+    double lat;
+    double lon;
+    double roll;
+    double pitch;
+    int16_t magX;
+    int16_t magY;
+    int16_t magZ;
+};
+
+struct joystick_data{
+    uint16_t x0 = 0;
+    uint16_t x1 = 0;
+    uint16_t y0 = 0;
+    uint16_t y1 = 0;
+};
+
+location_data locdata;
+joystick_data joydata;
+
+//Storing and detecting practical GPS sentences
 char prefix[16];
 char sentence[128];
 
-float latitude = 0.0f;
-float longitude = 0.0f;
+//This is the actually practical GPS sentence
+bool gpsSentenceBlock = false;
+char gpsSentenceBuffer[128];
+
+//Final processed GPS coordinates
+double latitude = 0.0f;
+double longitude = 0.0f;
 
 uint8_t clear_array(uint8_t* array, uint8_t size){
     for(int i = 0; i<size; i++){
@@ -58,72 +94,112 @@ double coord_clean(char* raw_numeric, char direction){
     if(direction > 'O'){
         loc_final = loc_final - 2*loc_final;;
     }
-    printf("Local coordinate:\t%4.4lf", loc_final);
+    //printf("Local coordinate:\t%4.4lf", loc_final);
     return(loc_final);
 }
 
-uint8_t parse_sentence(){
+//Semaphore UP is blocking!
+uint8_t semaphore_up(bool sem){
+    if(!sem){
+        sem = true;
+        return(0);
+    }
+    return(1);
+}
+
+//Semaphore DOWN is NOT blocking!
+uint8_t semaphore_down(bool sem){
+    if(sem){
+        sem = false;
+        return(0);
+    }
+    return(1);
+}
+
+
+
+uint8_t sentence_to_buffer(){
     //printf("Parsing a sentence!\n");
     //printf("%s\n", sentence);
     memcpy(prefix, &sentence[1],5);
-    printf("Picked up a prefix: %s\n", prefix);
-    return(0);
-    /*
-    uint8_t gmt_hour;
-    uint8_t gmt_minute;
-    uint8_t gmt_second;
+    //printf("Picked up a prefix: %s\n", prefix);
 
-    double lat;
-    double lon;
-    
-    //printf("/!\\");
-
-    //strcmp returns 0 when both are equal!
     if(!strcmp(prefix, "GNRMC")){
-        //printf("%s\n", sentence);
-        //printf("Parsing a location sentence!\n");
-        char sentencePart[128];
-        memcpy(sentencePart,&sentence[7],strlen(sentence)-6);
-        
-        char buffer[128];
-        uint8_t field_counter = 0;
-
-        for(int i = 0; i<strlen(sentencePart); i++){
-
-            if(sentencePart[i]==','){
-
-                switch(field_counter){
-                    case 3:
-                        latitude = coord_clean(buffer, sentencePart[i+1]);
-                        break;
-                    case 5:
-                        longitude = coord_clean(buffer, sentencePart[i+1]);
-                        break;
-                    default:
-                        printf("Other!\n");
-                        break;
-                }
-                   
-            }
-            else{
-                buffer[strlen(buffer)] = sentencePart[i];
-            }
-
-            printf("\n");
-            field_counter++;
-            //Clearing the buffer between sentence sections
-            memset(buffer, 0, sizeof buffer);
-            printf("%d\t",field_counter);
+        //printf("Got a location!\n");
+        if(semaphore_up(gpsSentenceBlock)==0){
+            strcpy(gpsSentenceBuffer, sentence);
+            semaphore_down(gpsSentenceBlock);
         }
+        else{
+            printf("Cocking nora\n");
+        }
+        
+    }
 
-    }
-    else if(!strcmp(prefix, "GPTXT")){
-        printf("Diagnostics sentence!");
-    }
-    clear_array((uint8_t*)prefix, sizeof(prefix));
-    printf("Done!\n");
     return(0);
-    */
+}
+
+uint8_t parse_sentence(){
+
+    char sentencePart[128];
+    if(semaphore_up(gpsSentenceBlock)==0 ){
+        strcpy(sentencePart,&gpsSentenceBuffer[7]);
+        semaphore_down(gpsSentenceBlock);
+        //printf("Copied %s\n",sentencePart);
+    }
+    else{
+        printf("Cock!\n");
+    }
+
+    char buffer[128];
+    memset(buffer, 0, sizeof(buffer));
+    uint8_t field_counter = 0;
+    
+    for(int i = 0; i<strlen(sentencePart); i++){
+
+        if(sentencePart[i]==','){
+            
+            field_counter++;
+            //printf("%d\n", field_counter);
+
+            switch(field_counter){
+                case 3:
+                    //printf("LATITUDE LINE:%s\n",buffer);
+                    //We assume any string with fewer than 9 characters is not a valid coordinate value
+                    if(strlen(buffer)>9){
+                        locdata.lat = coord_clean(buffer, sentencePart[i+1]);
+                    }
+                    
+                    break;
+                case 5:
+                    //printf("LONGITUDE LINE:%s\n",buffer);
+                    //We assume any string with fewer than 9 characters is not a valid coordinate value
+                    if(strlen(buffer)>9){
+                        locdata.lon = coord_clean(buffer, sentencePart[i+1]);
+                    }
+                    break;
+                default:
+                    //printf("Other!\n");
+                    break;
+            }
+            memset(buffer, 0, sizeof(buffer));               
+        }
+        else{
+            buffer[strlen(buffer)] = sentencePart[i];
+            //buffer[strlen(buffer)] = sentencePart[i];
+        }
+        
+    }
+        //Clearing the buffer between sentence sections
+        memset(buffer, 0, sizeof(buffer));
+        //printf("%d\t",field_counter);
+
+    //clear_array((uint8_t*)prefix, sizeof(prefix));
+    
+    //printf("Sentence to process:\t%s\n",sentencePart);
+    //printf("Done!\n");
+    return(0);
+
 }
 
 
@@ -131,49 +207,19 @@ void on_uart_rx() {
     while (uart_is_readable(UART_ID)) {
         //printf("Reading a char from UART!\n");
         uint8_t ch = uart_getc(UART_ID);
-        printf("%c", ch);
+        //printf("%c", ch);
 
         sentence[strlen(sentence)] = ch;
         if(ch == '\n'){
             //printf("Received a sentence!\n");
-            printf("This one: %s\n", sentence);
-            parse_sentence();
+            //printf("This one: %s\n", sentence);
+            sentence_to_buffer();
             clear_array((uint8_t*)sentence, sizeof(sentence));          
         }
     }
 }
 
 //GPS NEO6M
-
-uint32_t ms_since_boot = 0;
-uint32_t ms_last_read = 0;
-uint32_t ms_last_change = 0;
-uint32_t ms_last_loc = 0;
-uint32_t ms_last_hdg = 0;
-uint32_t ms_last_print = 0;
-uint32_t ms_last_joy = 0;
-
-uint8_t led_state = 0;
-
-struct location_data{
-    float lat;
-    float lon;
-    float roll;
-    float pitch;
-    int16_t magX;
-    int16_t magY;
-    int16_t magZ;
-};
-
-struct joystick_data{
-    uint16_t x0 = 0;
-    uint16_t x1 = 0;
-    uint16_t y0 = 0;
-    uint16_t y1 = 0;
-};
-
-location_data locdata;
-joystick_data joydata;
 
 // Perform initialisation
 int pico_led_init(void) {
@@ -207,6 +253,13 @@ void read_accel(ACCELEROMETER accel) {
         //printf("Roll:%3.3f\tPitch:%3.3f\t\tX: %-2.3f\tY: %-2.3f\tZ: %-2.3f\n",accel.getRoll(),accel.getPitch(), accel.getRawX(), accel.getRawY(), accel.getRawZ());
         locdata.roll = accel.getRoll();
         locdata.pitch = accel.getPitch();
+    }
+}
+
+void process_gps_uart() {
+    if( ms_since_boot - ms_last_loc >= 100){
+        ms_last_loc = ms_since_boot;
+        parse_sentence();
     }
 }
 
@@ -257,7 +310,7 @@ uint8_t printReadings() {
     if( ms_since_boot - ms_last_print >= 500){
         ms_last_print = ms_since_boot;
         //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        printf("%d\t%d\t%d\n", locdata.magX, locdata.magY, locdata.magZ);
+        printf("GPS\t%lf\t%lf\t\tMAG\t%d\t%d\t%d\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -275,16 +328,6 @@ int main() {
     sleep_ms(100);
     pico_set_led();
     //ADS ads(i2c1, 15, 14);
-    
-    //sleep_ms(1000);
-    //printf("Starting GPS\n");
-    //sleep_ms(1000);
-    //GPS gps(1,26,27);
-    //printf("GPS Started\n");
-    //sleep_ms(1000);
-    
-    //gps_data gdata;
-
 
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
@@ -310,13 +353,14 @@ int main() {
     while (true) {
         ms_since_boot = to_ms_since_boot(get_absolute_time());
         
-        //read_accel(accel);
+        read_accel(accel);
         //printf("Accel read!");
-        //read_mag(mag);
+        read_mag(mag);
         //read_gps(gps, gdata);
+        process_gps_uart();
         //read_joy(ads);
         pico_set_led();
-        //printReadings();
+        printReadings();
 
     }
 }
