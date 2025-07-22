@@ -251,7 +251,7 @@ void read_accel(ACCELEROMETER accel) {
     if( ms_since_boot - ms_last_read >= 50){
         ms_last_read = ms_since_boot;
         //printf("Roll:%3.3f\tPitch:%3.3f\t\tX: %-2.3f\tY: %-2.3f\tZ: %-2.3f\n",accel.getRoll(),accel.getPitch(), accel.getRawX(), accel.getRawY(), accel.getRawZ());
-        locdata.roll = accel.getRoll();
+        locdata.roll = accel.getRollUD();
         locdata.pitch = accel.getPitch();
     }
 }

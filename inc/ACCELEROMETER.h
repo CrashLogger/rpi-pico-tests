@@ -41,6 +41,7 @@ class ACCELEROMETER{
         //FUNCS
         float getPitch();
         float getRoll();
+        float getRollUD();
 
         float getRawX();
         float getRawY();

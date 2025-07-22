@@ -98,6 +98,23 @@ float ACCELEROMETER::getRoll(){
     
 }
 
+float ACCELEROMETER::getRollUD(){
+    update();
+    if(AccY >= 0 && AccZ > 0){
+        return 180 - abs(ACCELEROMETER::RollAngle);
+    }
+    else if(AccY >= 0 && AccZ < 0){
+        return abs(ACCELEROMETER::RollAngle);
+    }
+    else if(AccY < 0 && AccZ < 0){
+        return -abs(ACCELEROMETER::RollAngle);
+    }
+    else{
+        return -180 +abs(ACCELEROMETER::RollAngle);
+    }
+    
+}
+
 float ACCELEROMETER::getRawX(){
     return ACCELEROMETER::AccX;
 }
