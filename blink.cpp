@@ -12,6 +12,11 @@
 #include "string.h"
 #include "ADS.h"
 
+#define TAIL_LIGHT 13
+#define STARBOARD_LIGHT 12
+#define PORT_LIGHT 11
+#define STROBES 10
+
 //GPS NEO6M
 
 #define UART_ID uart1
@@ -32,6 +37,7 @@ uint32_t ms_last_loc = 0;
 uint32_t ms_last_hdg = 0;
 uint32_t ms_last_print = 0;
 uint32_t ms_last_joy = 0;
+uint32_t ms_strobe = 0;
 
 uint8_t led_state = 0;
 
@@ -40,6 +46,7 @@ struct location_data{
     double lon;
     double roll;
     double pitch;
+    double heading;
     int16_t magX;
     int16_t magY;
     int16_t magZ;
@@ -225,6 +232,14 @@ void on_uart_rx() {
 int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+    gpio_init(TAIL_LIGHT);
+    gpio_set_dir(TAIL_LIGHT, GPIO_OUT);
+    gpio_init(STARBOARD_LIGHT);
+    gpio_set_dir(STARBOARD_LIGHT, GPIO_OUT);
+    gpio_init(PORT_LIGHT);
+    gpio_set_dir(PORT_LIGHT, GPIO_OUT);
+    gpio_init(STROBES);
+    gpio_set_dir(STROBES, GPIO_OUT);
     return PICO_OK;
 }
 
@@ -243,9 +258,27 @@ void pico_set_led() {
         ms_last_change = ms_since_boot;
         led_state = toggle(led_state);
         gpio_put(PICO_DEFAULT_LED_PIN, led_state);
-        
+        gpio_put(TAIL_LIGHT, led_state);
+        gpio_put(STARBOARD_LIGHT, led_state);
+        gpio_put(PORT_LIGHT, led_state);
     }
 }
+
+void strobes(){
+    if(ms_since_boot - ms_strobe <= 1000){
+        if((ms_since_boot - ms_strobe >= 200 && ms_since_boot - ms_strobe <= 275)||(ms_since_boot - ms_strobe >= 325 && ms_since_boot - ms_strobe <= 400)){
+            gpio_put(STROBES, true);
+        }
+        else{
+            gpio_put(STROBES,false);
+        }
+
+    }
+    else{
+        ms_strobe = ms_since_boot;
+    }
+}
+
 
 void read_accel(ACCELEROMETER accel) {
     if( ms_since_boot - ms_last_read >= 50){
@@ -277,8 +310,12 @@ uint8_t read_mag(MAG mag) {
     if( ms_since_boot - ms_last_hdg >= 100){
         ms_last_hdg = ms_since_boot;
 
-        //printf("Mag check\n");
-        float heading = mag.getHdg();
+        //Regular heading using the X and Y axis from the magnetometer.
+        //locdata.heading = mag.getHdg();
+
+        //Roll correction but the MPU6050 I have is... weirdly oriented.
+        locdata.heading = mag.getRCHdg(locdata.pitch);
+
         locdata.magX = mag.getRawX();
         locdata.magY = mag.getRawY();
         locdata.magZ = mag.getRawZ();
@@ -310,7 +347,7 @@ uint8_t printReadings() {
     if( ms_since_boot - ms_last_print >= 500){
         ms_last_print = ms_since_boot;
         //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        printf("GPS\t%lf\t%lf\t\tMAG\t%d\t%d\t%d\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
+        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%d\t%d\t%d\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -349,6 +386,8 @@ int main() {
         sentence[i] = 0;
     }
 
+    
+
 
     while (true) {
         ms_since_boot = to_ms_since_boot(get_absolute_time());
@@ -360,6 +399,7 @@ int main() {
         process_gps_uart();
         //read_joy(ads);
         pico_set_led();
+        strobes();
         printReadings();
 
     }

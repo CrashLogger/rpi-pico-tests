@@ -5,6 +5,8 @@
 #include "pico/binary_info.h"
 #include "hardware/i2c.h"
 
+#define MATH_PI 3.141592653
+
 #ifndef __MAG_H_
 #define __MAG_H_
 
@@ -70,7 +72,8 @@ class MAG{
         //VARS
 
         //FUNCS
-        float getHdg();
+        double getHdg();
+        double getRCHdg(double roll);
 
         int16_t getRawX();
         int16_t getRawY();
