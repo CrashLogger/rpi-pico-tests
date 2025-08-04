@@ -20,6 +20,7 @@
 //GPS NEO6M
 
 #define UART_ID uart1
+#define TAP_UART_ID uart0
 #define BAUD_RATE 9600
 #define DATA_BITS 8
 #define STOP_BITS 1
@@ -36,6 +37,7 @@ uint32_t ms_last_change = 0;
 uint32_t ms_last_loc = 0;
 uint32_t ms_last_hdg = 0;
 uint32_t ms_last_print = 0;
+uint32_t ms_last_tap = 0;
 uint32_t ms_last_joy = 0;
 uint32_t ms_strobe = 0;
 
@@ -47,9 +49,9 @@ struct location_data{
     double roll;
     double pitch;
     double heading;
-    int16_t magX;
-    int16_t magY;
-    int16_t magZ;
+    double magX;
+    double magY;
+    double magZ;
 };
 
 struct joystick_data{
@@ -209,6 +211,23 @@ uint8_t parse_sentence(){
 
 }
 
+/*
+void on_tap_rx() {
+    while (uart_is_readable(TAP_UART_ID)) {
+        //printf("Reading a char from UART!\n");
+        uint8_t ch = uart_getc(TAP_UART_ID);
+        //printf("%c", ch);
+
+        tapMessage[strlen(tapMessage)] = ch;
+        if(ch == '\n'){
+            //printf("Received a sentence!\n");
+            //printf("This one: %s\n", sentence);
+            sentence_to_buffer();
+            clear_array((uint8_t*)sentence, sizeof(sentence));          
+        }
+    }
+}
+*/
 
 void on_uart_rx() {
     while (uart_is_readable(UART_ID)) {
@@ -304,7 +323,7 @@ void read_gps(GPS gps, gps_data gdata) {
         locdata.lon = gdata.longitude;
         //printf("LAT:\t%4.4f\tLON:\t%4.4f\t%s\n", gdata.latitude, gdata.longitude, gdata.time);
     }
-}
+} 
 
 uint8_t read_mag(MAG mag) {
     if( ms_since_boot - ms_last_hdg >= 100){
@@ -314,11 +333,12 @@ uint8_t read_mag(MAG mag) {
         //locdata.heading = mag.getHdg();
 
         //Roll correction but the MPU6050 I have is... weirdly oriented.
-        locdata.heading = mag.getRCHdg(locdata.pitch);
+        //locdata.heading = mag.getRCHdg(locdata.pitch);
+        locdata.heading = mag.getHdg();
 
-        locdata.magX = mag.getRawX();
-        locdata.magY = mag.getRawY();
-        locdata.magZ = mag.getRawZ();
+        locdata.magX = mag.getNormX();
+        locdata.magY = mag.getNormY();
+        locdata.magZ = mag.getNormZ();
         //printf("AAAAA\n");
     }
     return(0);
@@ -343,11 +363,34 @@ uint8_t read_joy(ADS ads) {
     return(0);
 }
 
+uint8_t tapReadings() {
+    if( ms_since_boot - ms_last_tap >= 500){
+        ms_last_tap = ms_since_boot;
+
+        //WE NEED FLOATS FOR TAP, NOT DOUBLES!
+        float tmp_lat = (float)locdata.lat;
+        float tmp_lon = (float)locdata.lon;
+
+        //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
+        uint8_t buffer[128];
+        memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(float));
+        memcpy(buffer + (1*sizeof(float)), (uint8_t*)&tmp_lon, sizeof(float));
+        buffer[8] = 170;
+        buffer[9] = 170;
+        //sprintf(buffer, "%c%c", (char)170, (char)170);
+        //sprintf(buffer, "GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf%c%c",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch, (char)170, (char)170);
+        uart_puts(uart0, (char*)buffer);
+        
+        //printf("%f = %s\n",tmp_lon,(char*)buffer+4);
+    }
+    return(0);
+}
+
 uint8_t printReadings() {
     if( ms_since_boot - ms_last_print >= 500){
         ms_last_print = ms_since_boot;
         //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%d\t%d\t%d\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
+        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -366,6 +409,8 @@ int main() {
     pico_set_led();
     //ADS ads(i2c1, 15, 14);
 
+    //UART1 - GPS MODULE
+    // ==================================================================================== //
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
     gpio_set_function(UART_RX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_RX_PIN));
@@ -381,14 +426,33 @@ int main() {
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
 
+    //UART0 - TAP COMMUNICATION
+    // ==================================================================================== //
+    uart_init(TAP_UART_ID, 115200);
+    gpio_set_function(0, UART_FUNCSEL_NUM(TAP_UART_ID, 0));
+    gpio_set_function(1, UART_FUNCSEL_NUM(TAP_UART_ID, 1));
+
+    //Uart parity, fifo, format... settings
+    uart_set_hw_flow(TAP_UART_ID, false, false);
+    uart_set_format(TAP_UART_ID, DATA_BITS, STOP_BITS, PARITY);
+    uart_set_fifo_enabled(TAP_UART_ID, false);
+
+    /*
+    //UART receiving causes interrupts
+    int UART_IRQ = TAP_UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;
+    irq_set_exclusive_handler(UART_IRQ, on_tap_tx);
+    irq_set_enabled(UART_IRQ, true);
+    uart_set_irq_enables(TAP_UART_ID, true, false);
+    */
+
+    // ==================================================================================== //
+
     //Emptying out the sentence to make strlen work
     for(int i = 0; i<sizeof(sentence); i++){
         sentence[i] = 0;
     }
 
     
-
-
     while (true) {
         ms_since_boot = to_ms_since_boot(get_absolute_time());
         
@@ -401,6 +465,7 @@ int main() {
         pico_set_led();
         strobes();
         printReadings();
+        tapReadings();
 
     }
 }

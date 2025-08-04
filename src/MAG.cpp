@@ -66,14 +66,14 @@ uint8_t MAG::poll(){
         readBytes = i2c_read_blocking(i2c1, addr, data, 6, true);
         i2c_write_blocking(i2c1, addr, reset_read, 2, false);
 
-        //LSBX, MSBX, LSBY, MSBY, LSBZ, MSBZ
-        raw_x = int16_t(data[0]<<8| data[1]);
-        raw_y = int16_t(data[2]<<8| data[3]);
+        //MSBX, LSBX, MSBY, LSBY, MSBZ, LSBZ
+        raw_y = int16_t(data[0]<<8| data[1]);
         raw_z = int16_t(data[4]<<8| data[5]);
+        raw_x = int16_t(data[2]<<8| data[3]);
 
 
         //MAG_C_X = (MAG_X-mean(MAG_X))/(std(MAG_X)*3);
-        norm_x = ((raw_x - CALIBRATION_X)/SCALE_X)+MOVE_X;
+        norm_x = -((raw_x - CALIBRATION_X)/SCALE_X)+MOVE_X;
         norm_y = ((raw_y - CALIBRATION_Y)/SCALE_Y)+MOVE_Y;
         norm_z = ((raw_z - CALIBRATION_Z)/SCALE_Z)+MOVE_Z;
 
