@@ -15,7 +15,7 @@
 #define TAIL_LIGHT 13
 #define STARBOARD_LIGHT 12
 #define PORT_LIGHT 11
-#define STROBES 10
+#define STROBES 15
 
 //GPS NEO6M
 
@@ -40,6 +40,7 @@ uint32_t ms_last_print = 0;
 uint32_t ms_last_tap = 0;
 uint32_t ms_last_joy = 0;
 uint32_t ms_strobe = 0;
+uint32_t ms_last_rx_poll = 0;
 
 uint8_t led_state = 0;
 
@@ -61,20 +62,42 @@ struct joystick_data{
     uint16_t y1 = 0;
 };
 
+struct TAP{
+  uint8_t targetID = 0;
+  uint8_t sourceID = 0;
+  uint8_t length = 0;
+  uint8_t typeID = 0;
+};
+
+TAP tapHeader;
+
 location_data locdata;
 joystick_data joydata;
 
 //Storing and detecting practical GPS sentences
-char prefix[16];
-char sentence[128];
+    //Sentence prefix to identify exact GNSS service
+    char prefix[16];
+    //Uart sentence storage
+    char sentence[128];
 
-//This is the actually practical GPS sentence
-bool gpsSentenceBlock = false;
-char gpsSentenceBuffer[128];
+    //Working sentence storage buffer
+    char gpsSentenceBuffer[128];
 
-//Final processed GPS coordinates
-double latitude = 0.0f;
-double longitude = 0.0f;
+    //Semaphore for working sentence storage
+    bool gpsSentenceBlock = false;
+
+
+//TAP command receiving
+    //Semaphore for working buffer storage
+    bool tapBufferBlock = false;
+    //Working buffer
+    char tapBuffer[255];
+    //Indx for the tap buffer, we can't trust that it will not contain any 0s!
+    uint8_t tapBufferIdx = 0;
+    //Buffer for reading from serial
+    char tapCommand[255];
+    //Index for the tap command, we can't trust that it will not contain any 0s!
+    uint8_t tapCommandIdx = 0;
 
 uint8_t clear_array(uint8_t* array, uint8_t size){
     for(int i = 0; i<size; i++){
@@ -125,13 +148,42 @@ uint8_t semaphore_down(bool sem){
     return(1);
 }
 
+uint8_t tap_to_buffer(){
+    if(semaphore_up(tapBufferBlock)==0){
+        memcpy(tapBuffer, tapCommand, sizeof(tapCommand)-1);
+        semaphore_down(tapBufferBlock);
+        printf(" <-> Copied %d bytes\n", sizeof(tapBuffer));
+    }
+    else{
+        printf("TAP Message semaphore - Copy operation prohibited.\n");
+    }
+
+    return(0);
+}
+
+uint8_t parse_tap_command(){
+    if( ms_since_boot - ms_last_rx_poll >= 50){
+        ms_last_rx_poll = ms_since_boot;
+        uint8_t receivedTapPayload[255];
+
+        TAP receivedTapHeader;
+        if(semaphore_up(tapBufferBlock)==0){
+            memcpy((uint8_t*)&receivedTapHeader, tapBuffer, sizeof(receivedTapHeader));
+            memcpy((uint8_t*)&receivedTapPayload, tapBuffer+4, tapBuffer[2]);
+            semaphore_down(tapBufferBlock);
+
+        }
+        else{
+
+        }
+        printf("DETECTED TYPE:%d\n",receivedTapHeader.typeID);
+    }
+    return(0);
+}
 
 
 uint8_t sentence_to_buffer(){
-    //printf("Parsing a sentence!\n");
-    //printf("%s\n", sentence);
     memcpy(prefix, &sentence[1],5);
-    //printf("Picked up a prefix: %s\n", prefix);
 
     if(!strcmp(prefix, "GNRMC")){
         //printf("Got a location!\n");
@@ -140,24 +192,21 @@ uint8_t sentence_to_buffer(){
             semaphore_down(gpsSentenceBlock);
         }
         else{
-            printf("Cocking nora\n");
-        }
-        
+            //printf("GPS Sentence semaphore - Parse operation prohibited.\n");
+        }   
     }
-
     return(0);
 }
 
 uint8_t parse_sentence(){
 
     char sentencePart[128];
-    if(semaphore_up(gpsSentenceBlock)==0 ){
+    if(semaphore_up(gpsSentenceBlock)==0){
         strcpy(sentencePart,&gpsSentenceBuffer[7]);
         semaphore_down(gpsSentenceBlock);
-        //printf("Copied %s\n",sentencePart);
     }
     else{
-        printf("Cock!\n");
+        //printf("GPS Sentence semaphore - Copy operation prohibited.\n");
     }
 
     char buffer[128];
@@ -211,25 +260,7 @@ uint8_t parse_sentence(){
 
 }
 
-/*
-void on_tap_rx() {
-    while (uart_is_readable(TAP_UART_ID)) {
-        //printf("Reading a char from UART!\n");
-        uint8_t ch = uart_getc(TAP_UART_ID);
-        //printf("%c", ch);
-
-        tapMessage[strlen(tapMessage)] = ch;
-        if(ch == '\n'){
-            //printf("Received a sentence!\n");
-            //printf("This one: %s\n", sentence);
-            sentence_to_buffer();
-            clear_array((uint8_t*)sentence, sizeof(sentence));          
-        }
-    }
-}
-*/
-
-void on_uart_rx() {
+void on_gps_rx() {
     while (uart_is_readable(UART_ID)) {
         //printf("Reading a char from UART!\n");
         uint8_t ch = uart_getc(UART_ID);
@@ -241,6 +272,27 @@ void on_uart_rx() {
             //printf("This one: %s\n", sentence);
             sentence_to_buffer();
             clear_array((uint8_t*)sentence, sizeof(sentence));          
+        }
+    }
+}
+
+//TODO
+//WIP
+void on_tap_rx(){
+    while (uart_is_readable(uart0)) {
+        //printf("Reading a char from UART!\n");
+        uint8_t ch = uart_getc(uart0);
+
+        tapCommand[tapCommandIdx] = ch;
+        tapCommandIdx++;
+        printf("Received:%d\n",(uint8_t)ch);
+
+        //if(!strcmp(tapCommand + strlen(tapCommand-2), {(char)170, (char)170, (char)0})){
+        if(tapCommand[tapCommandIdx-1] == (char)170 && tapCommand[tapCommandIdx-2] == (char)170){
+            printf("!!!!!\n");
+            tap_to_buffer();
+            clear_array((uint8_t*)tapCommand, sizeof(tapCommand));
+            tapCommandIdx = 0; 
         }
     }
 }
@@ -262,24 +314,17 @@ int pico_led_init(void) {
     return PICO_OK;
 }
 
-uint8_t toggle(uint8_t var){
-    if(var > 0){
-        return 0;
+void pico_set_led() {
+    if(ms_since_boot - ms_last_change <= 1000){
+        if((ms_since_boot - ms_last_change >= 200 && ms_since_boot - ms_last_change <= 275)||(ms_since_boot - ms_last_change >= 325 && ms_since_boot - ms_last_change <= 400)){
+            gpio_put(PICO_DEFAULT_LED_PIN, true);
+        }
+        else{
+            gpio_put(PICO_DEFAULT_LED_PIN,false);
+        }
     }
     else{
-        return 1;
-    }
-}
-
-// Turn the led on or off
-void pico_set_led() {
-    if( ms_since_boot - ms_last_change >= 1000){
         ms_last_change = ms_since_boot;
-        led_state = toggle(led_state);
-        gpio_put(PICO_DEFAULT_LED_PIN, led_state);
-        gpio_put(TAIL_LIGHT, led_state);
-        gpio_put(STARBOARD_LIGHT, led_state);
-        gpio_put(PORT_LIGHT, led_state);
     }
 }
 
@@ -309,7 +354,7 @@ void read_accel(ACCELEROMETER accel) {
 }
 
 void process_gps_uart() {
-    if( ms_since_boot - ms_last_loc >= 100){
+    if( ms_since_boot - ms_last_loc >= 750){
         ms_last_loc = ms_since_boot;
         parse_sentence();
     }
@@ -363,6 +408,7 @@ uint8_t read_joy(ADS ads) {
     return(0);
 }
 
+//Sending sensor readings over TAP for telemetry
 uint8_t tapReadings() {
     if( ms_since_boot - ms_last_tap >= 500){
         ms_last_tap = ms_since_boot;
@@ -390,7 +436,9 @@ uint8_t printReadings() {
     if( ms_since_boot - ms_last_print >= 500){
         ms_last_print = ms_since_boot;
         //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
+        
+        //DEBUG:
+        //printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -422,7 +470,7 @@ int main() {
 
     //UART receiving causes interrupts
     int UART_IRQ = UART_ID == uart1 ? UART1_IRQ : UART0_IRQ;
-    irq_set_exclusive_handler(UART_IRQ, on_uart_rx);
+    irq_set_exclusive_handler(UART_IRQ, on_gps_rx);
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
 
@@ -437,20 +485,19 @@ int main() {
     uart_set_format(TAP_UART_ID, DATA_BITS, STOP_BITS, PARITY);
     uart_set_fifo_enabled(TAP_UART_ID, false);
 
-    /*
+    
     //UART receiving causes interrupts
-    int UART_IRQ = TAP_UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;
-    irq_set_exclusive_handler(UART_IRQ, on_tap_tx);
-    irq_set_enabled(UART_IRQ, true);
+    int UART_IRQ_0 = TAP_UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;
+    irq_set_exclusive_handler(UART_IRQ_0, on_tap_rx);
+    irq_set_enabled(UART_IRQ_0, true);
     uart_set_irq_enables(TAP_UART_ID, true, false);
-    */
+    
 
     // ==================================================================================== //
 
     //Emptying out the sentence to make strlen work
-    for(int i = 0; i<sizeof(sentence); i++){
-        sentence[i] = 0;
-    }
+    memset(sentence, 0, sizeof(sentence));
+
 
     
     while (true) {
@@ -466,6 +513,7 @@ int main() {
         strobes();
         printReadings();
         tapReadings();
+        parse_tap_command();
 
     }
 }
