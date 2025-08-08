@@ -1,24 +1,18 @@
-/**
- * Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
- *
- * SPDX-License-Identifier: BSD-3-Clause
- */
-
 #include "pico/stdlib.h"
 #include <stdio.h>
 #include "ACCELEROMETER.h"
-#include "GPS.h"
 #include "MAG.h"
 #include "string.h"
 #include "ADS.h"
+#include "SERVO.h"
 
 #define TAIL_LIGHT 13
 #define STARBOARD_LIGHT 12
 #define PORT_LIGHT 11
+#define RADIO_LINK_LOSS_INDICATOR 14
 #define STROBES 15
 
-//GPS NEO6M
-
+//GPS NEO6M DEFINTIONS
 #define UART_ID uart1
 #define TAP_UART_ID uart0
 #define BAUD_RATE 9600
@@ -31,7 +25,8 @@
 
 static int chars_rxed = 0;
 
-uint32_t ms_since_boot = 0;
+//SCHEDULING
+
 uint32_t ms_last_read = 0;
 uint32_t ms_last_change = 0;
 uint32_t ms_last_loc = 0;
@@ -41,8 +36,11 @@ uint32_t ms_last_tap = 0;
 uint32_t ms_last_joy = 0;
 uint32_t ms_strobe = 0;
 uint32_t ms_last_rx_poll = 0;
+uint32_t ms_servo_update = 0;
 
-uint8_t led_state = 0;
+//Communication watchdog!
+
+uint32_t ms_last_rx = 0;
 
 struct location_data{
     double lat;
@@ -63,14 +61,23 @@ struct joystick_data{
 };
 
 struct TAP{
-  uint8_t targetID = 0;
-  uint8_t sourceID = 0;
-  uint8_t length = 0;
-  uint8_t typeID = 0;
+    uint8_t targetID = 0;
+    uint8_t sourceID = 0;
+    uint8_t length = 0;
+    uint8_t typeID = 0;
+};
+
+struct TAP_D_COMMAND{
+    uint16_t bools = 0;
+    uint16_t throttle = 0;
+    uint16_t ail_roll = 0;
+    uint16_t rud_yaw = 0;
+    uint16_t ele_pitch = 0;
+    uint16_t aux_flaps = 0; 
 };
 
 TAP tapHeader;
-
+TAP_D_COMMAND tapDCommand;
 location_data locdata;
 joystick_data joydata;
 
@@ -98,6 +105,10 @@ joystick_data joydata;
     char tapCommand[255];
     //Index for the tap command, we can't trust that it will not contain any 0s!
     uint8_t tapCommandIdx = 0;
+
+//Servo controls
+SERVO ail0 (17, 200, 1200);
+SERVO ail1 (16, 200, 1200);
 
 uint8_t clear_array(uint8_t* array, uint8_t size){
     for(int i = 0; i<size; i++){
@@ -152,18 +163,19 @@ uint8_t tap_to_buffer(){
     if(semaphore_up(tapBufferBlock)==0){
         memcpy(tapBuffer, tapCommand, sizeof(tapCommand)-1);
         semaphore_down(tapBufferBlock);
-        printf(" <-> Copied %d bytes\n", sizeof(tapBuffer));
+        //We are always copying the same size buffer after all. 255 bytes is not that long
+        //printf(" <-> Copied %d bytes\n", sizeof(tapBuffer));
+        ms_last_rx = to_ms_since_boot(get_absolute_time());
     }
     else{
-        printf("TAP Message semaphore - Copy operation prohibited.\n");
+        //printf("TAP Message semaphore - Copy operation prohibited.\n");
     }
 
     return(0);
 }
 
 uint8_t parse_tap_command(){
-    if( ms_since_boot - ms_last_rx_poll >= 50){
-        ms_last_rx_poll = ms_since_boot;
+
         uint8_t receivedTapPayload[255];
 
         TAP receivedTapHeader;
@@ -171,13 +183,28 @@ uint8_t parse_tap_command(){
             memcpy((uint8_t*)&receivedTapHeader, tapBuffer, sizeof(receivedTapHeader));
             memcpy((uint8_t*)&receivedTapPayload, tapBuffer+4, tapBuffer[2]);
             semaphore_down(tapBufferBlock);
-
         }
         else{
 
         }
-        printf("DETECTED TYPE:%d\n",receivedTapHeader.typeID);
-    }
+
+        switch(receivedTapHeader.typeID){
+            case 0:
+            // A Direct command message, we need to use the right struct for this!
+                memcpy((uint8_t*)&tapDCommand, receivedTapPayload, receivedTapHeader.length);
+                printf("Bools: 0x%x\n", tapDCommand.bools);
+                printf("Throt: 0x%x\n", tapDCommand.throttle);
+                printf("Roll:  0x%x\n", tapDCommand.ail_roll);
+                printf("Yaw:   0x%x\n", tapDCommand.rud_yaw);
+                printf("Pitch: 0x%x\n", tapDCommand.ele_pitch);
+                printf("Other: 0x%x\n", tapDCommand.aux_flaps);
+                break;
+
+            // We avoid dealing with message types we don't expect
+            default:
+                break;
+        }
+        //printf("DETECTED TYPE:%d\n",receivedTapHeader.typeID);
     return(0);
 }
 
@@ -198,7 +225,7 @@ uint8_t sentence_to_buffer(){
     return(0);
 }
 
-uint8_t parse_sentence(){
+uint8_t parse_gps_sentence(){
 
     char sentencePart[128];
     if(semaphore_up(gpsSentenceBlock)==0){
@@ -222,7 +249,6 @@ uint8_t parse_sentence(){
 
             switch(field_counter){
                 case 3:
-                    //printf("LATITUDE LINE:%s\n",buffer);
                     //We assume any string with fewer than 9 characters is not a valid coordinate value
                     if(strlen(buffer)>9){
                         locdata.lat = coord_clean(buffer, sentencePart[i+1]);
@@ -230,14 +256,13 @@ uint8_t parse_sentence(){
                     
                     break;
                 case 5:
-                    //printf("LONGITUDE LINE:%s\n",buffer);
                     //We assume any string with fewer than 9 characters is not a valid coordinate value
                     if(strlen(buffer)>9){
                         locdata.lon = coord_clean(buffer, sentencePart[i+1]);
                     }
                     break;
                 default:
-                    //printf("Other!\n");
+                    //We can check for other fields' data in the future, such as the time, heading or speed!
                     break;
             }
             memset(buffer, 0, sizeof(buffer));               
@@ -285,16 +310,21 @@ void on_tap_rx(){
 
         tapCommand[tapCommandIdx] = ch;
         tapCommandIdx++;
-        printf("Received:%d\n",(uint8_t)ch);
+        //printf("Received:%d\n",(uint8_t)ch);
 
         //if(!strcmp(tapCommand + strlen(tapCommand-2), {(char)170, (char)170, (char)0})){
         if(tapCommand[tapCommandIdx-1] == (char)170 && tapCommand[tapCommandIdx-2] == (char)170){
-            printf("!!!!!\n");
             tap_to_buffer();
             clear_array((uint8_t*)tapCommand, sizeof(tapCommand));
             tapCommandIdx = 0; 
         }
     }
+}
+
+uint8_t adjustServos(){
+    ail0.moveServo((uint8_t)tapDCommand.throttle);
+    ail1.moveServo((uint8_t)tapDCommand.bools);
+    return(0);
 }
 
 //GPS NEO6M
@@ -309,14 +339,16 @@ int pico_led_init(void) {
     gpio_set_dir(STARBOARD_LIGHT, GPIO_OUT);
     gpio_init(PORT_LIGHT);
     gpio_set_dir(PORT_LIGHT, GPIO_OUT);
+    gpio_init(RADIO_LINK_LOSS_INDICATOR);
+    gpio_set_dir(RADIO_LINK_LOSS_INDICATOR, GPIO_OUT);
     gpio_init(STROBES);
     gpio_set_dir(STROBES, GPIO_OUT);
     return PICO_OK;
 }
 
 void pico_set_led() {
-    if(ms_since_boot - ms_last_change <= 1000){
-        if((ms_since_boot - ms_last_change >= 200 && ms_since_boot - ms_last_change <= 275)||(ms_since_boot - ms_last_change >= 325 && ms_since_boot - ms_last_change <= 400)){
+    if(to_ms_since_boot(get_absolute_time()) - ms_last_change <= 1000){
+        if((to_ms_since_boot(get_absolute_time()) - ms_last_change >= 200 && to_ms_since_boot(get_absolute_time()) - ms_last_change <= 275)||(to_ms_since_boot(get_absolute_time()) - ms_last_change >= 325 && to_ms_since_boot(get_absolute_time()) - ms_last_change <= 400)){
             gpio_put(PICO_DEFAULT_LED_PIN, true);
         }
         else{
@@ -324,77 +356,47 @@ void pico_set_led() {
         }
     }
     else{
-        ms_last_change = ms_since_boot;
+        ms_last_change = to_ms_since_boot(get_absolute_time());
     }
 }
 
 void strobes(){
-    if(ms_since_boot - ms_strobe <= 1000){
-        if((ms_since_boot - ms_strobe >= 200 && ms_since_boot - ms_strobe <= 275)||(ms_since_boot - ms_strobe >= 325 && ms_since_boot - ms_strobe <= 400)){
+    if(to_ms_since_boot(get_absolute_time()) - ms_strobe <= 1000){
+        if((to_ms_since_boot(get_absolute_time()) - ms_strobe >= 200 && to_ms_since_boot(get_absolute_time()) - ms_strobe <= 275)||(to_ms_since_boot(get_absolute_time()) - ms_strobe >= 325 && to_ms_since_boot(get_absolute_time()) - ms_strobe <= 400)){
             gpio_put(STROBES, true);
         }
         else{
             gpio_put(STROBES,false);
         }
-
     }
     else{
-        ms_strobe = ms_since_boot;
+        ms_strobe = to_ms_since_boot(get_absolute_time());
     }
 }
 
 
-void read_accel(ACCELEROMETER accel) {
-    if( ms_since_boot - ms_last_read >= 50){
-        ms_last_read = ms_since_boot;
-        //printf("Roll:%3.3f\tPitch:%3.3f\t\tX: %-2.3f\tY: %-2.3f\tZ: %-2.3f\n",accel.getRoll(),accel.getPitch(), accel.getRawX(), accel.getRawY(), accel.getRawZ());
-        locdata.roll = accel.getRollUD();
-        locdata.pitch = accel.getPitch();
-    }
-}
-
-void process_gps_uart() {
-    if( ms_since_boot - ms_last_loc >= 750){
-        ms_last_loc = ms_since_boot;
-        parse_sentence();
-    }
-}
-
-void read_gps(GPS gps, gps_data gdata) {
-    if( ms_since_boot - ms_last_loc >= 50){
-        ms_last_loc = ms_since_boot;
-        gdata = gps.parse_string();
-        locdata.lat = gdata.latitude;
-        locdata.lon = gdata.longitude;
-        //printf("LAT:\t%4.4f\tLON:\t%4.4f\t%s\n", gdata.latitude, gdata.longitude, gdata.time);
-    }
-} 
-
-uint8_t read_mag(MAG mag) {
-    if( ms_since_boot - ms_last_hdg >= 100){
-        ms_last_hdg = ms_since_boot;
-
-        //Regular heading using the X and Y axis from the magnetometer.
-        //locdata.heading = mag.getHdg();
-
-        //Roll correction but the MPU6050 I have is... weirdly oriented.
-        //locdata.heading = mag.getRCHdg(locdata.pitch);
-        locdata.heading = mag.getHdg();
-
-        locdata.magX = mag.getNormX();
-        locdata.magY = mag.getNormY();
-        locdata.magZ = mag.getNormZ();
-        //printf("AAAAA\n");
-    }
+uint8_t read_accel(ACCELEROMETER accel) {
+    locdata.roll = accel.getRollUD();
+    locdata.pitch = accel.getPitch();
     return(0);
 }
 
+uint8_t read_mag(MAG mag) {
+    locdata.heading = mag.getHdg();
+
+    locdata.magX = mag.getNormX();
+    locdata.magY = mag.getNormY();
+    locdata.magZ = mag.getNormZ();
+    return(0);
+}
+
+//WIP - some issues... somehow
 uint8_t read_joy(ADS ads) {
-    if( ms_since_boot - ms_last_joy >= 100){
+    if( to_ms_since_boot(get_absolute_time()) - ms_last_joy >= 100){
         sleep_ms(50);
         printf("Hello!\n");
         printf("We are calling the ADS to read some stuff for us.\n");
-        ms_last_joy = ms_since_boot;
+        ms_last_joy = to_ms_since_boot(get_absolute_time());
         joydata.x0 = ads.readChannel(1);
         gpio_put(PICO_DEFAULT_LED_PIN, 1);
         //joydata.x1 = ads.readShortChannel(1);
@@ -402,43 +404,31 @@ uint8_t read_joy(ADS ads) {
         //joydata.y1 = ads.readShortChannel(3);
         
         printf("%d, %d, %d, %d\n", joydata.x0, joydata.x1, joydata.y0, joydata.y1);
-
-        //printf("AAAAA\n");
     }
     return(0);
 }
 
 //Sending sensor readings over TAP for telemetry
 uint8_t tapReadings() {
-    if( ms_since_boot - ms_last_tap >= 500){
-        ms_last_tap = ms_since_boot;
+    //WE NEED FLOATS FOR TAP, NOT DOUBLES!
+    float tmp_lat = (float)locdata.lat;
+    float tmp_lon = (float)locdata.lon;
 
-        //WE NEED FLOATS FOR TAP, NOT DOUBLES!
-        float tmp_lat = (float)locdata.lat;
-        float tmp_lon = (float)locdata.lon;
+    uint8_t buffer[128];
+    memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(float));
+    memcpy(buffer + (1*sizeof(float)), (uint8_t*)&tmp_lon, sizeof(float));
+    buffer[8] = 170;
+    buffer[9] = 170;
+    
+    uart_puts(uart0, (char*)buffer);
 
-        //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        uint8_t buffer[128];
-        memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(float));
-        memcpy(buffer + (1*sizeof(float)), (uint8_t*)&tmp_lon, sizeof(float));
-        buffer[8] = 170;
-        buffer[9] = 170;
-        //sprintf(buffer, "%c%c", (char)170, (char)170);
-        //sprintf(buffer, "GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf%c%c",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch, (char)170, (char)170);
-        uart_puts(uart0, (char*)buffer);
-        
-        //printf("%f = %s\n",tmp_lon,(char*)buffer+4);
-    }
     return(0);
 }
 
 uint8_t printReadings() {
-    if( ms_since_boot - ms_last_print >= 500){
-        ms_last_print = ms_since_boot;
-        //printf("%4.4f\t%4.4f\t\t%4.4fº\t%4.4fº\t%1.4f\t%1.4f\t%1.4f\n", locdata.lat, locdata.lon, locdata.roll, locdata.pitch, locdata.magX, locdata.magY, locdata.magZ);
-        
-        //DEBUG:
-        //printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
+    if( to_ms_since_boot(get_absolute_time()) - ms_last_print >= 500){
+        ms_last_print = to_ms_since_boot(get_absolute_time());
+        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -491,8 +481,6 @@ int main() {
     irq_set_exclusive_handler(UART_IRQ_0, on_tap_rx);
     irq_set_enabled(UART_IRQ_0, true);
     uart_set_irq_enables(TAP_UART_ID, true, false);
-    
-
     // ==================================================================================== //
 
     //Emptying out the sentence to make strlen work
@@ -500,20 +488,57 @@ int main() {
 
 
     
-    while (true) {
-        ms_since_boot = to_ms_since_boot(get_absolute_time());
-        
-        read_accel(accel);
-        //printf("Accel read!");
-        read_mag(mag);
-        //read_gps(gps, gdata);
-        process_gps_uart();
+    while (true) {    
+        //Read IMU values 
+        if( to_ms_since_boot(get_absolute_time()) - ms_last_read >= 50){
+            ms_last_read = to_ms_since_boot(get_absolute_time());   
+            read_accel(accel);
+        }
+
+        //Read magnetometer to (attempt to) acquire heading.
+        if( to_ms_since_boot(get_absolute_time()) - ms_last_hdg >= 100){
+            ms_last_hdg = to_ms_since_boot(get_absolute_time());
+            read_mag(mag);
+        }
+
+        //Process the last valid string received via UART from the GPS module
+        if( to_ms_since_boot(get_absolute_time()) - ms_last_loc >= 750){
+            ms_last_loc = to_ms_since_boot(get_absolute_time());
+            parse_gps_sentence();
+        }
         //read_joy(ads);
+
+        //Transmit telemetry data using TAP
+        if( to_ms_since_boot(get_absolute_time()) - ms_last_tap >= 500){
+            ms_last_tap = to_ms_since_boot(get_absolute_time());
+            tapReadings();
+        }
+
+        // Parse any received TAP commands into usable data
+        if(to_ms_since_boot(get_absolute_time()) - ms_last_rx_poll >= 25){
+            ms_last_rx_poll = to_ms_since_boot(get_absolute_time());
+            parse_tap_command();
+        }
+
+        // Enable the failsafe if the radio communication gets lost
+        if(to_ms_since_boot(get_absolute_time()) - ms_last_rx >= 600){
+            gpio_put(RADIO_LINK_LOSS_INDICATOR, true);
+        }
+        else{
+            gpio_put(RADIO_LINK_LOSS_INDICATOR, false);
+        }
+
+        if(to_ms_since_boot(get_absolute_time()) - ms_servo_update >= 50){
+            ms_servo_update = to_ms_since_boot(get_absolute_time());
+            adjustServos();
+        }
+
+        //Lighting effects, internally scheduled. To be improved.
         pico_set_led();
         strobes();
-        printReadings();
-        tapReadings();
-        parse_tap_command();
+
+        //Debug printing, internally scheduled
+        //printReadings();
 
     }
 }

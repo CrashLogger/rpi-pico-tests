@@ -38,9 +38,9 @@ pico_sdk_init()
 add_executable(blink
     blink.cpp
     src/ACCELEROMETER.cpp
-    src/GPS.cpp
     src/MAG.cpp
     src/ADS.cpp
+    src/SERVO.cpp
     )
 
 target_include_directories(blink PUBLIC
@@ -51,6 +51,7 @@ target_include_directories(blink PUBLIC
 target_link_libraries(blink pico_stdlib
     hardware_spi
     hardware_i2c
+    hardware_pwm
 )
 
 if (PICO_CYW43_SUPPORTED)
