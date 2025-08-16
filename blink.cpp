@@ -25,6 +25,8 @@
 
 static int chars_rxed = 0;
 
+#define VTAIL_GAIN 0.5
+
 //SCHEDULING
 
 uint32_t ms_last_read = 0;
@@ -107,15 +109,21 @@ joystick_data joydata;
     uint8_t tapCommandIdx = 0;
 
 //Servo controls
-SERVO ail0 (17, 200, 1200);
-SERVO ail1 (16, 200, 1200);
+    //Regular margins: 200, 1200
 
-uint8_t clear_array(uint8_t* array, uint8_t size){
-    for(int i = 0; i<size; i++){
-        array[i] = 0;
-    }
-    return(0);
-}
+    //ESC
+SERVO ESC (22, 200, 1200);
+
+    //AIL0 (left) should be 600 900. 600 is all down, 900 is all up (a tad above resting)
+SERVO ail0 (17, 600, 900);
+    //AIL1 (right) should be 950 600. 950 is all down, 600 is all up (a tad above resting) 
+SERVO ail1 (16, 950, 600);
+
+    // RUD0(left) should be 600 900. 600 is all down, 900 is all up (a tad above resting)
+//SERVO rud0 (19, 1000, 250);
+SERVO rud0 (19, 250, 1000);
+    //RUD1 (right) should be 950 600. 950 is all down, 600 is all up (a tad above resting) 
+SERVO rud1 (18, 1050, 400);
 
 double coord_clean(char* raw_numeric, char direction){
     char loc_deg[4];
@@ -123,7 +131,7 @@ double coord_clean(char* raw_numeric, char direction){
 
     uint8_t decimalPos = 0;
     //Just in case a different compiler doesn't clear assigned arrays.
-    clear_array((uint8_t*)loc_deg, sizeof(loc_deg));
+    memset((uint8_t*)loc_deg, 0, sizeof(loc_deg));
     
     //Determining if it is a latitude or longitude value by locating the decimal point
     //We get DDMM.mmmm for latitude and DDDMM.mmmm for longitude
@@ -137,10 +145,10 @@ double coord_clean(char* raw_numeric, char direction){
     if(direction > 'O'){
         loc_final = loc_final - 2*loc_final;;
     }
-    //printf("Local coordinate:\t%4.4lf", loc_final);
     return(loc_final);
 }
 
+//Although the change is quick enough not to break 99.9999% of the time, this could be atomic-ised.
 //Semaphore UP is blocking!
 uint8_t semaphore_up(bool sem){
     if(!sem){
@@ -192,6 +200,8 @@ uint8_t parse_tap_command(){
             case 0:
             // A Direct command message, we need to use the right struct for this!
                 memcpy((uint8_t*)&tapDCommand, receivedTapPayload, receivedTapHeader.length);
+                
+                /*
                 printf("Bools: 0x%x\n", tapDCommand.bools);
                 printf("Throt: 0x%x\n", tapDCommand.throttle);
                 printf("Roll:  0x%x\n", tapDCommand.ail_roll);
@@ -199,6 +209,7 @@ uint8_t parse_tap_command(){
                 printf("Pitch: 0x%x\n", tapDCommand.ele_pitch);
                 printf("Other: 0x%x\n", tapDCommand.aux_flaps);
                 break;
+                */
 
             // We avoid dealing with message types we don't expect
             default:
@@ -273,11 +284,8 @@ uint8_t parse_gps_sentence(){
         }
         
     }
-        //Clearing the buffer between sentence sections
-        memset(buffer, 0, sizeof(buffer));
-        //printf("%d\t",field_counter);
-
-    //clear_array((uint8_t*)prefix, sizeof(prefix));
+    //Clearing the buffer between sentence sections
+    memset(buffer, 0, sizeof(buffer));
     
     //printf("Sentence to process:\t%s\n",sentencePart);
     //printf("Done!\n");
@@ -296,7 +304,7 @@ void on_gps_rx() {
             //printf("Received a sentence!\n");
             //printf("This one: %s\n", sentence);
             sentence_to_buffer();
-            clear_array((uint8_t*)sentence, sizeof(sentence));          
+            memset(sentence, 0, sizeof(sentence));      
         }
     }
 }
@@ -305,9 +313,8 @@ void on_gps_rx() {
 //WIP
 void on_tap_rx(){
     while (uart_is_readable(uart0)) {
-        //printf("Reading a char from UART!\n");
         uint8_t ch = uart_getc(uart0);
-
+        //printf("ch: %d\n", ch);
         tapCommand[tapCommandIdx] = ch;
         tapCommandIdx++;
         //printf("Received:%d\n",(uint8_t)ch);
@@ -315,21 +322,28 @@ void on_tap_rx(){
         //if(!strcmp(tapCommand + strlen(tapCommand-2), {(char)170, (char)170, (char)0})){
         if(tapCommand[tapCommandIdx-1] == (char)170 && tapCommand[tapCommandIdx-2] == (char)170){
             tap_to_buffer();
-            clear_array((uint8_t*)tapCommand, sizeof(tapCommand));
+            memset((uint8_t*)tapCommand, 0, sizeof(tapCommand));
             tapCommandIdx = 0; 
         }
     }
 }
 
 uint8_t adjustServos(){
-    ail0.moveServo((uint8_t)tapDCommand.throttle);
-    ail1.moveServo((uint8_t)tapDCommand.bools);
+    ail0.moveServo((uint8_t)tapDCommand.ail_roll);
+    ail1.moveServo((uint8_t)tapDCommand.ail_roll);
+
+    uint8_t left_mix = (((tapDCommand.rud_yaw)+(tapDCommand.ele_pitch))*VTAIL_GAIN);
+    uint8_t right_mix = (((255-tapDCommand.rud_yaw)+(tapDCommand.ele_pitch))*VTAIL_GAIN);
+
+    printf("L: %d R: %d\n",left_mix, right_mix);
+    rud1.moveServo(right_mix);
+    rud0.moveServo(left_mix);
     return(0);
 }
 
 //GPS NEO6M
 
-// Perform initialisation
+// Initialisation
 int pico_led_init(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
@@ -346,7 +360,8 @@ int pico_led_init(void) {
     return PICO_OK;
 }
 
-void pico_set_led() {
+// Decor LED
+uint8_t pico_set_led() {
     if(to_ms_since_boot(get_absolute_time()) - ms_last_change <= 1000){
         if((to_ms_since_boot(get_absolute_time()) - ms_last_change >= 200 && to_ms_since_boot(get_absolute_time()) - ms_last_change <= 275)||(to_ms_since_boot(get_absolute_time()) - ms_last_change >= 325 && to_ms_since_boot(get_absolute_time()) - ms_last_change <= 400)){
             gpio_put(PICO_DEFAULT_LED_PIN, true);
@@ -358,9 +373,11 @@ void pico_set_led() {
     else{
         ms_last_change = to_ms_since_boot(get_absolute_time());
     }
+    return(0);
 }
 
-void strobes(){
+// Strobe lights
+uint8_t strobes(){
     if(to_ms_since_boot(get_absolute_time()) - ms_strobe <= 1000){
         if((to_ms_since_boot(get_absolute_time()) - ms_strobe >= 200 && to_ms_since_boot(get_absolute_time()) - ms_strobe <= 275)||(to_ms_since_boot(get_absolute_time()) - ms_strobe >= 325 && to_ms_since_boot(get_absolute_time()) - ms_strobe <= 400)){
             gpio_put(STROBES, true);
@@ -372,6 +389,7 @@ void strobes(){
     else{
         ms_strobe = to_ms_since_boot(get_absolute_time());
     }
+    return(0);
 }
 
 
@@ -414,14 +432,24 @@ uint8_t tapReadings() {
     float tmp_lat = (float)locdata.lat;
     float tmp_lon = (float)locdata.lon;
 
+    printf("%f, %f\n", tmp_lat, tmp_lon);
+
     uint8_t buffer[128];
-    memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(float));
-    memcpy(buffer + (1*sizeof(float)), (uint8_t*)&tmp_lon, sizeof(float));
+
+    //TODO: Look to fix this stuff, the ESP8266 on the other end receives nothing.
+    buffer[0] = 'a';
+    buffer[1] = 'a';
+    buffer[2] = 'a';
+    buffer[3] = 'a';
+    buffer[4] = 'a';
+    buffer[5] = 'a';
+    buffer[6] = 'a';
+    buffer[7] = 'a';
     buffer[8] = 170;
     buffer[9] = 170;
-    
-    uart_puts(uart0, (char*)buffer);
+    buffer[10] = 0;
 
+    uart_puts(uart0, (char*)buffer);
     return(0);
 }
 
@@ -433,20 +461,7 @@ uint8_t printReadings() {
     return(0);
 }
 
-int main() {
-    stdio_init_all();
-    sleep_ms(1000);
-    printf("Hello world!");
-    int rc = pico_led_init();
-    hard_assert(rc == PICO_OK);
-
-    printf("Starting IMU\n");
-    ACCELEROMETER accel(1, 26, 27);
-    MAG mag(1, 26, 27);
-    sleep_ms(100);
-    pico_set_led();
-    //ADS ads(i2c1, 15, 14);
-
+uint8_t pico_uart_init(){
     //UART1 - GPS MODULE
     // ==================================================================================== //
     uart_init(UART_ID, BAUD_RATE);
@@ -463,6 +478,9 @@ int main() {
     irq_set_exclusive_handler(UART_IRQ, on_gps_rx);
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
+
+    //Emptying out the sentence buffer to make strlen work when working with GPS
+    memset(sentence, 0, sizeof(sentence));
 
     //UART0 - TAP COMMUNICATION
     // ==================================================================================== //
@@ -481,14 +499,30 @@ int main() {
     irq_set_exclusive_handler(UART_IRQ_0, on_tap_rx);
     irq_set_enabled(UART_IRQ_0, true);
     uart_set_irq_enables(TAP_UART_ID, true, false);
-    // ==================================================================================== //
 
-    //Emptying out the sentence to make strlen work
-    memset(sentence, 0, sizeof(sentence));
+    return(0);
+}
 
+int main() {
+    stdio_init_all();
+    sleep_ms(1000);
+    printf("Hello world!");
+    int rc = pico_led_init();
+    hard_assert(rc == PICO_OK);
+
+    pico_uart_init();
+
+    printf("Starting IMU\n");
+    ACCELEROMETER accel(1, 26, 27);
+    MAG mag(1, 26, 27);
+    sleep_ms(100);
+    pico_set_led();
+    //ADS ads(i2c1, 15, 14);
 
     
-    while (true) {    
+
+    
+    while (true) {
         //Read IMU values 
         if( to_ms_since_boot(get_absolute_time()) - ms_last_read >= 50){
             ms_last_read = to_ms_since_boot(get_absolute_time());   
@@ -528,6 +562,7 @@ int main() {
             gpio_put(RADIO_LINK_LOSS_INDICATOR, false);
         }
 
+        
         if(to_ms_since_boot(get_absolute_time()) - ms_servo_update >= 50){
             ms_servo_update = to_ms_since_boot(get_absolute_time());
             adjustServos();
