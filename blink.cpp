@@ -6,11 +6,22 @@
 #include "ADS.h"
 #include "SERVO.h"
 
-#define TAIL_LIGHT 13
-#define STARBOARD_LIGHT 12
-#define PORT_LIGHT 11
-#define RADIO_LINK_LOSS_INDICATOR 14
-#define STROBES 15
+//===== DEFINITIONS
+
+//Simple I/O
+#define TAIL_LIGHT 13                   //COMMON CONTROL: NAV_LIGHTS
+#define STARBOARD_LIGHT 12              //COMMON CONTROL: NAV_LIGHTS
+#define PORT_LIGHT 11                   //COMMON CONTROL: NAV_LIGHTS
+#define NAV_LIGHTS 16                   //TAIL, STARBOARD AND PORT LIGHTS
+#define STROBES 17                      //ALL AROUND STROBE LIGHTS
+#define RADIO_LINK_LOSS_INDICATOR 14    //UNUSED IN CURRENT PROTOTYPE
+
+//PWM IO, 0 is left side and 1 is right side
+#define ESC_PIN 22
+#define AIL_0_PIN 17
+#define AIL_1_PIN 16
+#define RUD_0_PIN 19
+#define RUD_1_PIN 18
 
 //GPS NEO6M DEFINTIONS
 #define UART_ID uart1
@@ -19,40 +30,37 @@
 #define DATA_BITS 8
 #define STOP_BITS 1
 #define PARITY    UART_PARITY_NONE
-
 #define UART_TX_PIN 4
 #define UART_RX_PIN 5
 
-static int chars_rxed = 0;
-
+//DEFINITIONS FOR CONTROL SURFACES
 #define VTAIL_GAIN 0.5
 
-//SCHEDULING
+//DEFINITIONS FOR TELEMETRY SCALING
+#define ALTIMETER_TELEM_PRECISSION 100
+#define HEADING_TELEM_PRECISSION 10
 
-uint32_t ms_last_read = 0;
-uint32_t ms_last_change = 0;
-uint32_t ms_last_loc = 0;
-uint32_t ms_last_hdg = 0;
-uint32_t ms_last_print = 0;
-uint32_t ms_last_tap = 0;
-uint32_t ms_last_joy = 0;
-uint32_t ms_strobe = 0;
-uint32_t ms_last_rx_poll = 0;
-uint32_t ms_servo_update = 0;
-
-//Communication watchdog!
-
-uint32_t ms_last_rx = 0;
+//===== COMMON STRUCTURES =====
 
 struct location_data{
     double lat;
     double lon;
+    double alt;
     double roll;
     double pitch;
     double heading;
     double magX;
     double magY;
     double magZ;
+};
+
+struct TAP_location_data{
+    float lat;
+    float lon;
+    uint16_t alt;
+    int16_t heading;
+    float roll;
+    float pitch;
 };
 
 struct joystick_data{
@@ -78,9 +86,27 @@ struct TAP_D_COMMAND{
     uint16_t aux_flaps = 0; 
 };
 
+//===== GLOBAL VARS =====
+
+//SCHEDULING
+uint32_t ms_last_read = 0;
+uint32_t ms_last_change = 0;
+uint32_t ms_last_loc = 0;
+uint32_t ms_last_hdg = 0;
+uint32_t ms_last_print = 0;
+uint32_t ms_last_tap = 0;
+uint32_t ms_last_joy = 0;
+uint32_t ms_strobe = 0;
+uint32_t ms_last_rx_poll = 0;
+uint32_t ms_servo_update = 0;
+
+//Communication watchdog!
+uint32_t ms_last_rx = 0;
+
 TAP tapHeader;
 TAP_D_COMMAND tapDCommand;
 location_data locdata;
+TAP_location_data telLocdata;
 joystick_data joydata;
 
 //Storing and detecting practical GPS sentences
@@ -112,18 +138,18 @@ joystick_data joydata;
     //Regular margins: 200, 1200
 
     //ESC
-SERVO ESC (22, 200, 1200);
+SERVO ESC (ESC_PIN, 200, 1200);
 
     //AIL0 (left) should be 600 900. 600 is all down, 900 is all up (a tad above resting)
-SERVO ail0 (17, 600, 900);
+SERVO ail0 (AIL_0_PIN, 600, 900);
     //AIL1 (right) should be 950 600. 950 is all down, 600 is all up (a tad above resting) 
-SERVO ail1 (16, 950, 600);
+SERVO ail1 (AIL_1_PIN, 50, 600);
 
     // RUD0(left) should be 600 900. 600 is all down, 900 is all up (a tad above resting)
 //SERVO rud0 (19, 1000, 250);
-SERVO rud0 (19, 250, 1000);
+SERVO rud0 (RUD_0_PIN, 250, 1000);
     //RUD1 (right) should be 950 600. 950 is all down, 600 is all up (a tad above resting) 
-SERVO rud1 (18, 1050, 400);
+SERVO rud1 (RUD_1_PIN, 1050, 400);
 
 double coord_clean(char* raw_numeric, char direction){
     char loc_deg[4];
@@ -429,27 +455,54 @@ uint8_t read_joy(ADS ads) {
 //Sending sensor readings over TAP for telemetry
 uint8_t tapReadings() {
     //WE NEED FLOATS FOR TAP, NOT DOUBLES!
-    float tmp_lat = (float)locdata.lat;
-    float tmp_lon = (float)locdata.lon;
+    telLocdata.lat = (float)locdata.lat;
+    telLocdata.lon = (float)locdata.lon;
 
-    printf("%f, %f\n", tmp_lat, tmp_lon);
+    telLocdata.roll = (float)locdata.roll;
+    telLocdata.pitch = (float)locdata.pitch;
+
+    //We want to keep two decimal points, but a metre of precission is probably overkill already. This makes it cm precission (by default!).
+    telLocdata.alt = (uint16_t)(locdata.alt*ALTIMETER_TELEM_PRECISSION);
+    //Same thing for the heading, this just gives us one decimal point of precission (by default!).
+    telLocdata.heading = (int16_t)(locdata.heading*HEADING_TELEM_PRECISSION);
 
     uint8_t buffer[128];
+    char eom = (char)170;
 
-    //TODO: Look to fix this stuff, the ESP8266 on the other end receives nothing.
-    buffer[0] = 'a';
-    buffer[1] = 'a';
-    buffer[2] = 'a';
-    buffer[3] = 'a';
-    buffer[4] = 'a';
-    buffer[5] = 'a';
-    buffer[6] = 'a';
-    buffer[7] = 'a';
-    buffer[8] = 170;
-    buffer[9] = 170;
-    buffer[10] = 0;
+/*     //TODO: There HAS to be a better way to do this
+    uint8_t bufferOffset = 0;
+    memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(tmp_lat));
+    bufferOffset = bufferOffset + sizeof(tmp_lat);
 
-    uart_puts(uart0, (char*)buffer);
+    memcpy((buffer+bufferOffset), (uint8_t*)&tmp_lon, sizeof(tmp_lon));
+    bufferOffset = bufferOffset + sizeof(tmp_lon);
+
+    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_alt, sizeof(tmp_alt));
+    bufferOffset = bufferOffset + sizeof(tmp_alt);
+
+    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_heading, sizeof(tmp_heading));
+    bufferOffset = bufferOffset + sizeof(tmp_heading);
+
+    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_roll, sizeof(tmp_roll));
+    bufferOffset = bufferOffset + sizeof(tmp_roll);
+    printf("TMP ROLL:%4.6f\n", tmp_roll);
+
+    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_pitch, sizeof(tmp_pitch));
+    bufferOffset = bufferOffset + sizeof(tmp_pitch); */
+
+    memcpy(buffer, (uint8_t*)&telLocdata, sizeof(telLocdata));
+    memcpy((buffer + sizeof(telLocdata)), (uint8_t*)&eom, sizeof(eom));
+    memcpy((buffer + sizeof(telLocdata) + sizeof(eom)), (uint8_t*)&eom, sizeof(eom));
+
+    //buffer[8] = 170;
+    //buffer[9] = 170;
+    //buffer[10] = 0;
+
+    for(int i = 0; i<(sizeof(telLocdata) + 2*sizeof(eom)); i++){
+        printf("%d-",buffer[i]);
+        uart_putc(TAP_UART_ID, (char)buffer[i]);
+    }
+    printf("\n");
     return(0);
 }
 
@@ -484,7 +537,7 @@ uint8_t pico_uart_init(){
 
     //UART0 - TAP COMMUNICATION
     // ==================================================================================== //
-    uart_init(TAP_UART_ID, 115200);
+    uart_init(TAP_UART_ID, 9600);
     gpio_set_function(0, UART_FUNCSEL_NUM(TAP_UART_ID, 0));
     gpio_set_function(1, UART_FUNCSEL_NUM(TAP_UART_ID, 1));
 
@@ -499,7 +552,7 @@ uint8_t pico_uart_init(){
     irq_set_exclusive_handler(UART_IRQ_0, on_tap_rx);
     irq_set_enabled(UART_IRQ_0, true);
     uart_set_irq_enables(TAP_UART_ID, true, false);
-
+    
     return(0);
 }
 
@@ -519,10 +572,20 @@ int main() {
     pico_set_led();
     //ADS ads(i2c1, 15, 14);
 
+
+    char testByte = (char)0;
     
 
     
     while (true) {
+
+        /*
+        uart_putc(TAP_UART_ID, testByte); // Send a single byte
+        printf("%d\n",(uint8_t)testByte);
+        testByte++;
+        sleep_ms(100);
+        */
+
         //Read IMU values 
         if( to_ms_since_boot(get_absolute_time()) - ms_last_read >= 50){
             ms_last_read = to_ms_since_boot(get_absolute_time());   
@@ -545,6 +608,7 @@ int main() {
         //Transmit telemetry data using TAP
         if( to_ms_since_boot(get_absolute_time()) - ms_last_tap >= 500){
             ms_last_tap = to_ms_since_boot(get_absolute_time());
+            //printf("UART!");
             tapReadings();
         }
 
@@ -572,8 +636,9 @@ int main() {
         pico_set_led();
         strobes();
 
+        /*
         //Debug printing, internally scheduled
         //printReadings();
-
+        */
     }
 }
