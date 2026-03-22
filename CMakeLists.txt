@@ -41,6 +41,7 @@ add_executable(blink
     src/MAG.cpp
     src/ADS.cpp
     src/SERVO.cpp
+    src/TAP.cpp
     )
 
 target_include_directories(blink PUBLIC

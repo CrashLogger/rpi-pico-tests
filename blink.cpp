@@ -5,6 +5,7 @@
 #include "string.h"
 #include "ADS.h"
 #include "SERVO.h"
+#include "TAP.h"
 
 //===== DEFINITIONS
 
@@ -80,6 +81,21 @@ uint32_t ms_last_rx = 0;
 
 location_data locdata;
 joystick_data joydata;
+
+// ================================================================================================
+// TAP PROTOCOL
+TAP tap;
+
+    //The transmission header should be pretty constant
+    TAP::TAP_ADDRESS_HEADER our_tx_header;
+    TAP::TAP_TRAILER our_tx_trailer;
+
+    //TAP DEFAULTS!
+    uint16_t tap_default_sof = 0xAA55;
+    uint16_t tap_default_eof = 0x55AA;
+
+
+// ================================================================================================
 
 //Storing and detecting practical GPS sentences
     //Sentence prefix to identify exact GNSS service
@@ -250,7 +266,15 @@ uint8_t parse_gps_sentence(){
     
     //printf("Sentence to process:\t%s\n",sentencePart);
     printf("Done!\n");
-    printf("Coordinates: %.4f,%.4f\n", locdata.lat, locdata.lon);
+    TAP::TAP_TELEMETRY telem;
+
+    telem.lat = locdata.lat;
+    telem.lon = locdata.lon;
+    telem.alt = locdata.alt;
+    telem.heading = locdata.heading;
+
+    tap.tapSendTelem(telem);
+    //printf("Coordinates: %.4f,%.4f\n", locdata.lat, locdata.lon);
     return(0);
 
 }
@@ -368,7 +392,7 @@ uint8_t read_mag(MAG mag) {
     locdata.magY = mag.getNormY();
     locdata.magZ = mag.getNormZ();
 
-    printf("%.6f, %.6f, %.6f\n", locdata.magX, locdata.magY, locdata.magZ);
+    //printf("%.6f, %.6f, %.6f\n", locdata.magX, locdata.magY, locdata.magZ);
 
     return(0);
 }
@@ -480,6 +504,13 @@ uint8_t pico_uart_init(){
     return(0);
 }
 
+int init_tap(){
+    //TAP SETUP FOR **THIS** DEVICE!
+    our_tx_header.sof_word = tap_default_sof;
+    our_tx_trailer.eof_word = tap_default_eof;
+    return(0);
+}
+
 int main() {
     stdio_init_all();
     sleep_ms(1000);
@@ -504,10 +535,7 @@ int main() {
 
     char testByte = (char)0;
     
-
-    
     while (true) {
-        printf("In da loop!\n");
         /*
         uart_putc(TAP_UART_ID, testByte); // Send a single byte
         printf("%d\n",(uint8_t)testByte);

@@ -1,74 +1,61 @@
-class TAP{
+// TAP.cpp
+#include "pico/stdlib.h"
+#include <stdio.h>
+#include "TAP.h" 
+#include <cstring>
 
-    //Constructor
-    TAP() {
+// Constructor
+
+    TAP::TAP() {
+        messages_since_last_datalink_telem = 0;
     }
 
-    /*
-        About the "pragma" lines: I copied them from someone's NRF24L01 driver example
-        They are meant to guarantee that the structs don't get padded when we don't tell them to
-
-    */
-
-    public:
-    #pragma pack(push, 1)
-    struct TAP_ADDRESS_HEADER{
-        uint16_t sof_word;
-        uint8_t target_id;
-        uint8_t source_id;
-        uint8_t message_len;
-        uint8_t message_type;
-        uint16_t cobs;
-    };
-    #pragma pack(pop)
-
-    #pragma pack(push, 1)
-    struct TAP_ACK_NACK{
-        uint8_t ack_type;
-        uint8_t token[3];
-    };
-    #pragma pack(pop)
-
-    #pragma pack(push, 1)
-    struct TAP_TELEMETRY{
-        float lat;
-        float lon;
-        uint16_t alt;
-        int16_t heading;
-        float roll;
-        float pitch;
-    };
-    #pragma pack(pop)
-
-    #pragma pack(push, 1)
-    struct TAP_DATALINK_TELEMETRY{
-        uint16_t rssi;
-        uint16_t snr;
-        uint16_t rtt;
-        uint16_t sent_pkts;
-        uint16_t delta_t;
-        uint16_t reserved;
-    };
-    #pragma pack(pop)
-
-    #pragma pack(push, 1)
-    struct TAP_INDIRECT_COMMAND{
-        uint16_t bools;
-        uint16_t reserved;
-        float lat;
-        float lon;
-        uint16_t alt;
-        int16_t heading;
-    };
-    #pragma pack(pop)
-
-    #pragma pack(push, 1)
-    struct TAP_TRAILER{
-        uint16_t crc_16;
-        uint16_t eof_word;
-    };
-    #pragma pack(pop)
-
-};
+    uint8_t tapInit(uint8_t source_id){
+        
+    }
 
 
+    uint8_t TAP::serialize(const TAP_ADDRESS_HEADER *header, const void *payload, TAP_TRAILER *trailer, uint8_t *buffer, uint8_t max_len) {
+        if (header->message_len + sizeof(TAP_ADDRESS_HEADER) + sizeof(TAP_TRAILER) > max_len) {
+            return -1;
+        }
+        // Serialize header
+        memcpy(buffer, header, sizeof(TAP_ADDRESS_HEADER));
+        uint8_t offset = sizeof(TAP_ADDRESS_HEADER);
+
+        // Serialize payload
+        memcpy(buffer + offset, payload, header->message_len);
+        offset += header->message_len;
+
+        // Serialize trailer, if one was provided (it should be!)
+        if (trailer) {
+            memcpy(buffer + offset, trailer, sizeof(TAP_TRAILER));
+        }
+        return offset + sizeof(TAP_TRAILER);
+    }
+    
+    //TODO: Look for the SOF word and implement COBS!
+    uint8_t TAP::tapSendTelem(const TAP_TELEMETRY &telemetry) {
+        uint8_t buffer[255];
+        TAP::TAP_ADDRESS_HEADER header;
+        TAP::TAP_TRAILER trailer;
+        header.sof_word = 0xAA55;
+        header.message_type = TELEMETRY;
+        header.message_len = sizeof(TAP_TELEMETRY);
+
+        trailer.eof_word = 0xAA55;
+
+        uint8_t len = serialize(&header, &telemetry, &trailer, buffer, sizeof(buffer));
+        if (len == 0) return TAP::TAP_ERROR_INVALID_LENGTH;
+
+        for (uint8_t i = 0; i < len; i++) {
+            printf("%02X ", buffer[i]);
+        }
+        printf("\t\n");
+
+        return TAP_OK;
+    }
+
+
+    //This should be able to fail to detect a correct struct after unraveling the header
+    uint8_t* deserialize(uint8_t *raw_message, uint8_t* message);
