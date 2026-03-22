@@ -54,36 +54,11 @@ struct location_data{
     double magZ;
 };
 
-struct TAP_location_data{
-    float lat;
-    float lon;
-    uint16_t alt;
-    int16_t heading;
-    float roll;
-    float pitch;
-};
-
 struct joystick_data{
     uint16_t x0 = 0;
     uint16_t x1 = 0;
     uint16_t y0 = 0;
     uint16_t y1 = 0;
-};
-
-struct TAP{
-    uint8_t targetID = 0;
-    uint8_t sourceID = 0;
-    uint8_t length = 0;
-    uint8_t typeID = 0;
-};
-
-struct TAP_D_COMMAND{
-    uint16_t bools = 0;
-    uint16_t throttle = 0;
-    uint16_t ail_roll = 0;
-    uint16_t rud_yaw = 0;
-    uint16_t ele_pitch = 0;
-    uint16_t aux_flaps = 0; 
 };
 
 //===== GLOBAL VARS =====
@@ -103,10 +78,7 @@ uint32_t ms_servo_update = 0;
 //Communication watchdog!
 uint32_t ms_last_rx = 0;
 
-TAP tapHeader;
-TAP_D_COMMAND tapDCommand;
 location_data locdata;
-TAP_location_data telLocdata;
 joystick_data joydata;
 
 //Storing and detecting practical GPS sentences
@@ -208,43 +180,6 @@ uint8_t tap_to_buffer(){
     return(0);
 }
 
-uint8_t parse_tap_command(){
-
-        uint8_t receivedTapPayload[255];
-
-        TAP receivedTapHeader;
-        if(semaphore_up(tapBufferBlock)==0){
-            memcpy((uint8_t*)&receivedTapHeader, tapBuffer, sizeof(receivedTapHeader));
-            memcpy((uint8_t*)&receivedTapPayload, tapBuffer+4, tapBuffer[2]);
-            semaphore_down(tapBufferBlock);
-        }
-        else{
-
-        }
-
-        switch(receivedTapHeader.typeID){
-            case 0:
-            // A Direct command message, we need to use the right struct for this!
-                memcpy((uint8_t*)&tapDCommand, receivedTapPayload, receivedTapHeader.length);
-                
-                /*
-                printf("Bools: 0x%x\n", tapDCommand.bools);
-                printf("Throt: 0x%x\n", tapDCommand.throttle);
-                printf("Roll:  0x%x\n", tapDCommand.ail_roll);
-                printf("Yaw:   0x%x\n", tapDCommand.rud_yaw);
-                printf("Pitch: 0x%x\n", tapDCommand.ele_pitch);
-                printf("Other: 0x%x\n", tapDCommand.aux_flaps);
-                break;
-                */
-
-            // We avoid dealing with message types we don't expect
-            default:
-                break;
-        }
-        //printf("DETECTED TYPE:%d\n",receivedTapHeader.typeID);
-    return(0);
-}
-
 
 uint8_t sentence_to_buffer(){
     memcpy(prefix, &sentence[1],5);
@@ -270,7 +205,7 @@ uint8_t parse_gps_sentence(){
         semaphore_down(gpsSentenceBlock);
     }
     else{
-        //printf("GPS Sentence semaphore - Copy operation prohibited.\n");
+        printf("GPS Sentence semaphore - Copy operation prohibited.\n");
     }
 
     char buffer[128];
@@ -314,7 +249,8 @@ uint8_t parse_gps_sentence(){
     memset(buffer, 0, sizeof(buffer));
     
     //printf("Sentence to process:\t%s\n",sentencePart);
-    //printf("Done!\n");
+    printf("Done!\n");
+    printf("Coordinates: %.4f,%.4f\n", locdata.lat, locdata.lon);
     return(0);
 
 }
@@ -354,18 +290,18 @@ void on_tap_rx(){
     }
 }
 
-uint8_t adjustServos(){
+/* uint8_t adjustServos(){
     ail0.moveServo((uint8_t)tapDCommand.ail_roll);
     ail1.moveServo((uint8_t)tapDCommand.ail_roll);
 
     uint8_t left_mix = (((tapDCommand.rud_yaw)+(tapDCommand.ele_pitch))*VTAIL_GAIN);
     uint8_t right_mix = (((255-tapDCommand.rud_yaw)+(tapDCommand.ele_pitch))*VTAIL_GAIN);
 
-    printf("L: %d R: %d\n",left_mix, right_mix);
+    //printf("L: %d R: %d\n",left_mix, right_mix);
     rud1.moveServo(right_mix);
     rud0.moveServo(left_mix);
     return(0);
-}
+} */
 
 //GPS NEO6M
 
@@ -431,6 +367,9 @@ uint8_t read_mag(MAG mag) {
     locdata.magX = mag.getNormX();
     locdata.magY = mag.getNormY();
     locdata.magZ = mag.getNormZ();
+
+    printf("%.6f, %.6f, %.6f\n", locdata.magX, locdata.magY, locdata.magZ);
+
     return(0);
 }
 
@@ -438,8 +377,8 @@ uint8_t read_mag(MAG mag) {
 uint8_t read_joy(ADS ads) {
     if( to_ms_since_boot(get_absolute_time()) - ms_last_joy >= 100){
         sleep_ms(50);
-        printf("Hello!\n");
-        printf("We are calling the ADS to read some stuff for us.\n");
+        //printf("Hello!\n");
+        //printf("We are calling the ADS to read some stuff for us.\n");
         ms_last_joy = to_ms_since_boot(get_absolute_time());
         joydata.x0 = ads.readChannel(1);
         gpio_put(PICO_DEFAULT_LED_PIN, 1);
@@ -452,6 +391,7 @@ uint8_t read_joy(ADS ads) {
     return(0);
 }
 
+/*
 //Sending sensor readings over TAP for telemetry
 uint8_t tapReadings() {
     //WE NEED FLOATS FOR TAP, NOT DOUBLES!
@@ -469,27 +409,6 @@ uint8_t tapReadings() {
     uint8_t buffer[128];
     char eom = (char)170;
 
-/*     //TODO: There HAS to be a better way to do this
-    uint8_t bufferOffset = 0;
-    memcpy(buffer, (uint8_t*)&tmp_lat, sizeof(tmp_lat));
-    bufferOffset = bufferOffset + sizeof(tmp_lat);
-
-    memcpy((buffer+bufferOffset), (uint8_t*)&tmp_lon, sizeof(tmp_lon));
-    bufferOffset = bufferOffset + sizeof(tmp_lon);
-
-    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_alt, sizeof(tmp_alt));
-    bufferOffset = bufferOffset + sizeof(tmp_alt);
-
-    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_heading, sizeof(tmp_heading));
-    bufferOffset = bufferOffset + sizeof(tmp_heading);
-
-    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_roll, sizeof(tmp_roll));
-    bufferOffset = bufferOffset + sizeof(tmp_roll);
-    printf("TMP ROLL:%4.6f\n", tmp_roll);
-
-    memcpy((buffer + bufferOffset), (uint8_t*)&tmp_pitch, sizeof(tmp_pitch));
-    bufferOffset = bufferOffset + sizeof(tmp_pitch); */
-
     memcpy(buffer, (uint8_t*)&telLocdata, sizeof(telLocdata));
     memcpy((buffer + sizeof(telLocdata)), (uint8_t*)&eom, sizeof(eom));
     memcpy((buffer + sizeof(telLocdata) + sizeof(eom)), (uint8_t*)&eom, sizeof(eom));
@@ -499,17 +418,22 @@ uint8_t tapReadings() {
     //buffer[10] = 0;
 
     for(int i = 0; i<(sizeof(telLocdata) + 2*sizeof(eom)); i++){
-        printf("%d-",buffer[i]);
-        uart_putc(TAP_UART_ID, (char)buffer[i]);
+        //UNCOMMENT BEFORE FLIGHT
+        
+        //printf("%d-",buffer[i]);
+        //uart_putc(TAP_UART_ID, (char)buffer[i]);
     }
-    printf("\n");
+    //UNCOMMENT BEFORE FLIGHT
+    //printf("\n");
     return(0);
 }
+*/
 
 uint8_t printReadings() {
     if( to_ms_since_boot(get_absolute_time()) - ms_last_print >= 500){
         ms_last_print = to_ms_since_boot(get_absolute_time());
-        printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
+        //UNCOMMENT BEFORE FLIGHT
+        //printf("GPS\t%lf\t%lf\t\tMAG\t%f\t%f\t%f\t%f\t\tACC\t%4.4lf\t%4.4lf\n",locdata.lat, locdata.lon, locdata.heading, locdata.magX, locdata.magY, locdata.magZ, locdata.roll, locdata.pitch);
     }
     return(0);
 }
@@ -568,6 +492,11 @@ int main() {
     printf("Starting IMU\n");
     ACCELEROMETER accel(1, 26, 27);
     MAG mag(1, 26, 27);
+
+    //The magneto seems to be working better as of late
+    //Maybe try to calibrate it with this newfound luck?
+    //Every value is still always negative but at least there's... some sense to the answers.
+
     sleep_ms(100);
     pico_set_led();
     //ADS ads(i2c1, 15, 14);
@@ -578,7 +507,7 @@ int main() {
 
     
     while (true) {
-
+        printf("In da loop!\n");
         /*
         uart_putc(TAP_UART_ID, testByte); // Send a single byte
         printf("%d\n",(uint8_t)testByte);
@@ -605,6 +534,7 @@ int main() {
         }
         //read_joy(ads);
 
+        /*
         //Transmit telemetry data using TAP
         if( to_ms_since_boot(get_absolute_time()) - ms_last_tap >= 500){
             ms_last_tap = to_ms_since_boot(get_absolute_time());
@@ -625,12 +555,12 @@ int main() {
         else{
             gpio_put(RADIO_LINK_LOSS_INDICATOR, false);
         }
-
         
         if(to_ms_since_boot(get_absolute_time()) - ms_servo_update >= 50){
             ms_servo_update = to_ms_since_boot(get_absolute_time());
             adjustServos();
         }
+        */
 
         //Lighting effects, internally scheduled. To be improved.
         pico_set_led();
