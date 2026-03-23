@@ -7,9 +7,44 @@ class TAP{
     TAP();
     /*
         About the "pragma" lines: I copied them from someone's NRF24L01 driver example
-        They are meant to guarantee that the structs don't get padded when we don't tell them to
-        I don't really know what they're up to, nor am I interested
-        It works with them and they shall stay there
+        They force the structs to fit into memory in funky ways and they are compiler dependent (oh boy)
+        For example:
+
+        On GCC for x86_64:
+        struct struct{
+            char aa;
+            int bb;
+            char cc;
+        }
+
+        with no pragma, will cause:
+
+        0x00________0x01________0x02_________0x03________
+        |           |           |           |           |
+        aa          ---------------PADDING---------------
+        bb0         bb1         bb2         bb3
+        cc          ---------------PADDING---------------
+
+        with pragma push 1,this will cause:
+
+        0x00________
+        |           |
+        aa
+        bb0
+        bb1
+        bb2
+        bb3
+        cc
+
+        and with pragma push 2,this will cause:
+
+        0x00________0x01________
+        |           |           |
+        aa          ---PADDING---
+        bb0         bb1         
+        bb2         bb3
+        cc          ---PADDING---
+
     */
 
     public:
